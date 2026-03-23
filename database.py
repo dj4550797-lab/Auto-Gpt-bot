@@ -1,8 +1,19 @@
 from pymongo import MongoClient
 import info
+import sys
 
-client = MongoClient(info.MONGO_URI)
-db = client['flixora_ai']
+# DEBUG: Check karne ke liye ki URI mil raha hai ya nahi
+if not info.MONGO_URI:
+    print("❌ ERROR: MONGO_URI is empty! Check Render Environment Variables.")
+    sys.exit(1) # Bot ko yahi rok dega agar URI nahi hai
+
+try:
+    client = MongoClient(info.MONGO_URI)
+    db = client['flixora_ai']
+    print("✅ MongoDB Connected Successfully!")
+except Exception as e:
+    print(f"❌ MongoDB Connection Error: {e}")
+    sys.exit(1)
 
 class Database:
     def __init__(self):
