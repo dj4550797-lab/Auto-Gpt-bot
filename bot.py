@@ -1,158 +1,154 @@
-import os, asyncio, time, re, httpx
-from pyrogram import Client, filters, idle
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from motor.motor_asyncio import AsyncIOMotorClient
-from aiohttp import web
+import logging
+import logging.config
+import asyncio
+from flask import Flask, request
+from telegram import Update
+from telegram.ext import Application, ContextTypes
 
-# --- CONFIG ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-MONGO_URL = os.environ.get("MONGO_URL", "")
-OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-ADMINS = [int(x) for x in os.environ.get("ADMINS", "").split()]
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", 0))
-START_IMG = os.environ.get("START_IMG", "https://envs.sh/34_.jpg")
-S_URL = os.environ.get("SHORTENER_URL", "")
-S_API = os.environ.get("SHORTENER_API", "")
-PORT = int(os.environ.get("PORT", "10000"))
+# Import configurations and database client
+import info
+from database import db_client
 
-THINK_STICKER = "CAACAgIAAxkBAAMIacD-Ra4_z1RuU2JTyYBeqq-qHrUAAvUAA_cCyA9HRphh0VDIsR4E"
+# Import all handlers from the plugins directory
+from plugins.start import start_handler, callback_handler
+from plugins.auth import auth_handler
+from plugins.ai_chat import chat_handler
+from plugins.premium import (
+    premium_cb_handler,
+    plan_selection_cb_handler,
+    back_to_start_cb_handler,
+    payment_conv_handler
+)
+from plugins.admin import admin_handlers
 
-# --- DB & APP ---
-db = AsyncIOMotorClient(MONGO_URL)["FlixoraGPT"]
-users_col = db["users"]
-app = Client("FlixoraGPT", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Setup logging from the configuration file for a cleaner output
+logging.config.fileConfig('logging.conf', disable_existing_loggers=False)
+logger = logging.getLogger(__name__)
 
-# States
-USER_STATES = {}
+# --- Main Application Setup ---
 
-# --- MODELS PARSER ---
-AVAIL_MODELS = []
-for m in os.environ.get("MODELS_LIST", "").split(","):
-    p = m.split("|")
-    if len(p) == 3: AVAIL_MODELS.append({"name": p[0], "id": p[1], "desc": p[2]})
+# Initialize the python-telegram-bot Application
+# We use a post_init function to set up the webhook asynchronously
+async def post_init(application: Application):
+    """
+    Sets the webhook after the application has been initialized.
+    This is the recommended approach for PTB v20+ with webhooks.
+    """
+    if info.WEBHOOK_URL:
+        webhook_url = f"{info.WEBHOOK_URL}/{info.BOT_TOKEN}"
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ Webhook successfully set to {webhook_url}")
+    else:
+        logger.warning("⚠️ No WEBHOOK_URL found in .env. Bot will not start with a webhook.")
 
-# --- WEB SERVER ---
-async def web_server():
-    server = web.Application()
-    server.add_routes([web.get('/', lambda r: web.Response(text="Flixora Live"))])
-    runner = web.AppRunner(server); await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+ptb_app = Application.builder().token(info.BOT_TOKEN).post_init(post_init).build()
 
-# --- HELPERS ---
-async def get_verify_link(uid):
-    base = f"https://t.me/{app.me.username}?start=verify_{uid}"
-    async with httpx.AsyncClient() as c:
-        try:
-            r = await c.get(f"https://{S_URL}/api?api={S_API}&url={base}")
-            return r.json().get("shortenedUrl", base)
-        except: return base
+# --- Register Handlers ---
+logger.info("Registering handlers...")
 
-async def check_access(uid):
-    u = await users_col.find_one({"_id": uid})
-    if not u or u.get("is_premium"): return True
-    return (time.time() - u.get("last_verified", 0)) < 86400
+# Core Handlers
+ptb_app.add_handler(start_handler)
+ptb_app.add_handler(auth_handler)
 
-# --- AI LOGIC ---
-async def ask_ai(prompt, uid):
-    u = await users_col.find_one({"_id": uid})
-    model = u.get("model", "openai/gpt-4o-mini")
-    async with httpx.AsyncClient() as c:
-        try:
-            res = await c.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OR_KEY}"},
-                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-                timeout=60
-            )
-            return res.json()['choices'][0]['message']['content']
-        except: return "❌ AI Error or Token Limit reached."
+# Main Menu Callback Handlers (from start.py)
+ptb_app.add_handler(callback_handler)
 
-# --- COMMANDS ---
-@app.on_message(filters.command("start") & filters.private)
-async def start(c, m):
-    uid = m.from_user.id
-    user = await users_col.find_one({"_id": uid})
+# Premium Menu Handlers (from premium.py)
+ptb_app.add_handler(premium_cb_handler)
+ptb_app.add_handler(plan_selection_cb_handler)
+ptb_app.add_handler(back_to_start_cb_handler)
+ptb_app.add_handler(payment_conv_handler)
 
-    if len(m.command) > 1 and m.command[1].startswith("verify_"):
-        await users_col.update_one({"_id": uid}, {"$set": {"last_verified": time.time()}})
-        return await m.reply_text("✅ 24h Access Granted!")
+# Admin Handlers (from admin.py)
+for handler in admin_handlers:
+    ptb_app.add_handler(handler)
 
-    if not user or not user.get("email"):
-        USER_STATES[uid] = "ASK_NAME"
-        return await m.reply_photo(START_IMG, caption="👋 **Welcome! Register to start.**\n\nEnter your **Full Name**:")
+# AI Chat Handler (must be last among MessageHandlers to not override others)
+ptb_app.add_handler(chat_handler)
 
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧠 Models", callback_data="model_menu"), InlineKeyboardButton("👤 Account", callback_data="status")],
-        [InlineKeyboardButton("🆘 Get Help", callback_data="ask_help"), InlineKeyboardButton("🔗 Refer", callback_data="refer")],
-        [InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{c.me.username}?startgroup=true")]
-    ])
-    await m.reply_photo(START_IMG, caption=f"✨ **Hello {user['name']}!**\nHow can Flixora assist you?", reply_markup=btns)
+# --- Global Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs errors caused by updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    # Optionally, inform the user that an error occurred
+    if isinstance(update, Update) and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="An unexpected error occurred. The developers have been notified."
+        )
 
-@app.on_message(filters.text & filters.private)
-async def handle_msgs(c, m):
-    uid = m.from_user.id
-    state = USER_STATES.get(uid)
+ptb_app.add_error_handler(error_handler)
 
-    if state == "ASK_NAME":
-        USER_STATES[uid] = {"name": m.text, "st": "ASK_EMAIL"}
-        await m.reply_text("📧 Now enter your **Email Address**:")
-    elif isinstance(state, dict) and state.get("st") == "ASK_EMAIL":
-        USER_STATES[uid]["email"] = m.text; USER_STATES[uid]["st"] = "ASK_BDAY"
-        await m.reply_text("🎂 Enter your **Birthday** (DD/MM/YYYY):")
-    elif isinstance(state, dict) and state.get("st") == "ASK_BDAY":
-        await users_col.update_one({"_id": uid}, {"$set": {"name": state["name"], "email": state["email"], "birthday": m.text, "last_verified": 0}}, upsert=True)
-        del USER_STATES[uid]
-        await m.reply_text("🎉 Registered! Use /start")
-        await c.send_message(LOG_CHANNEL, f"👤 **New User:** {state['name']}\nEmail: {state['email']}")
+# --- Scheduled Jobs ---
+async def auto_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Runs periodically to clean up expired premium memberships and bans.
+    """
+    import time
+    now = time.time()
+    logger.info("Running auto cleanup job...")
     
-    elif state == "HELP_MSG":
-        await c.send_message(LOG_CHANNEL, f"🆘 **Help Req from {uid}:**\n{m.text}")
-        del USER_STATES[uid]
-        await m.reply_text("✅ Sent to support channel!")
+    users = db_client.get_all_users()
+    for user in users:
+        # Check for expired premium
+        if user.get("is_premium") and user.get("premium_expiry") and now > user.get("premium_expiry"):
+            db_client.update_user(user["user_id"], {"is_premium": False, "premium_expiry": None})
+            try:
+                await context.bot.send_message(user["user_id"], "⚠️ Your Premium subscription has expired. Use /upgrade to renew!")
+            except Exception as e:
+                logger.warning(f"Could not notify user {user['user_id']} of premium expiry: {e}")
 
-    else: # AI CHAT
-        if not await check_access(uid):
-            link = await get_verify_link(uid)
-            return await m.reply_text("🛑 Access Expired! Verify:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Verify", url=link)]]))
-        
-        # SHOW THINKING STICKER
-        sticker = await m.reply_sticker(THINK_STICKER)
-        ans = await ask_ai(m.text, uid)
-        await sticker.delete()
-        await m.reply_text(f"🤖 **Flixora:**\n\n{ans}")
+        # Check for expired temporary bans
+        if user.get("is_banned") and user.get("ban_until") and now > user.get("ban_until"):
+            db_client.update_user(user["user_id"], {"is_banned": False, "ban_until": None})
+            logger.info(f"Auto-unbanned user {user['user_id']}.")
 
-# --- CALLBACKS ---
-@app.on_callback_query()
-async def cb(c, q):
-    uid = q.from_user.id
-    if q.data == "model_menu":
-        btns = [[InlineKeyboardButton(m['name'], callback_data=f"inf_{m['id']}")] for m in AVAIL_MODELS]
-        await q.message.edit_caption("🧠 **Select AI Brain:**", reply_markup=InlineKeyboardMarkup(btns))
-    elif q.data.startswith("inf_"):
-        mid = q.data.split("_", 1)[1]
-        m_info = next(i for i in AVAIL_MODELS if i['id'] == mid)
-        await q.message.edit_caption(f"📝 **{m_info['name']}**\n{m_info['desc']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Select", callback_data=f"set_{mid}")]]))
-    elif q.data.startswith("set_"):
-        mid = q.data.split("_", 1)[1]
-        await users_col.update_one({"_id": uid}, {"$set": {"model": mid}})
-        await q.answer("Model Selected!", show_alert=True)
-    elif q.data == "status":
-        u = await users_col.find_one({"_id": uid})
-        await q.message.edit_caption(f"👤 **Account Info**\n\nName: `{u['name']}`\nEmail: `{u['email']}`\nBday: `{u['birthday']}`\nModel: `{u.get('model','Default')}`")
-    elif q.data == "ask_help":
-        USER_STATES[uid] = "HELP_MSG"
-        await q.answer("Send your message now!", show_alert=True)
+ptb_app.job_queue.run_repeating(auto_cleanup_job, interval=3600, first=30) # Run every hour
 
-# --- START ---
+# --- Flask Web Server for Webhook ---
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def index():
+    """A simple endpoint to confirm the bot is running."""
+    return "FLIXORA AI Bot is up and running."
+
+@flask_app.route(f'/{info.BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    """
+    This endpoint receives the updates from Telegram.
+    It's the entry point for all user interactions when deployed.
+    """
+    try:
+        update_data = request.get_json(force=True)
+        update = Update.de_json(update_data, ptb_app.bot)
+        await ptb_app.process_update(update)
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        return "Error", 500
+
 async def main():
-    await web_server()
-    await app.start()
-    await app.set_bot_commands([BotCommand("start", "Home"), BotCommand("status", "My Account")])
-    await app.send_message(LOG_CHANNEL, "🚀 **Flixora AI Ecosystem Restarted**")
-    print("Flixora Online!")
-    await idle()
+    """Initializes the application and its webhook."""
+    logger.info("Initializing PTB application...")
+    await ptb_app.initialize()
+    logger.info("PTB application initialized.")
 
-if __name__ == "__main__":
-    app.run(main())
+if __name__ == '__main__':
+    # This setup ensures that the bot's async components are initialized
+    # before the synchronous Flask/Gunicorn server starts listening for requests.
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.create_task(main())
+    else:
+        loop.run_until_complete(main())
+    
+    # When running locally without Docker/Gunicorn for testing, you might uncomment the following lines:
+    # if not info.WEBHOOK_URL:
+    #     logger.info("Starting bot in polling mode for local testing...")
+    #     ptb_app.run_polling()
+    # else:
+    #     logger.info(f"Starting Flask server on port {info.PORT} for webhook...")
+    #     flask_app.run(host="0.0.0.0", port=info.PORT)
+    
+    logger.info("Setup complete. Gunicorn will now take over to run the Flask app.")

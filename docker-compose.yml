@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  flixora_bot:
+    build: .
+    ports:
+      - "10000:10000"
+    env_file:
+      - .env
+    restart: always

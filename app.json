@@ -1,0 +1,38 @@
+{
+  "name": "FLIXORA AI",
+  "description": "An advanced AI Telegram Bot with Login, Premium, and Shortener verification.",
+  "repository": "https://github.com/yourusername/flixora-ai-pro",
+  "logo": "https://example.com/logo.png",
+  "keywords": ["python", "telegram", "bot", "ai", "flask"],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "MONGO_URI": {
+      "description": "MongoDB connection URL",
+      "required": true
+    },
+    "LOG_CHANNEL": {
+      "description": "Channel ID for logs (e.g. -1001234567890)",
+      "required": true
+    },
+    "ADMIN_IDS": {
+      "description": "Comma separated Admin user IDs",
+      "required": true
+    },
+    "WEBHOOK_URL": {
+      "description": "The URL of your deployed application (e.g., https://flixora-ai.onrender.com)",
+      "required": true
+    },
+    "OPENROUTER_API_KEY": {
+      "description": "API Key for OpenRouter AI",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}

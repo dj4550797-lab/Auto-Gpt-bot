@@ -1,0 +1,54 @@
+# All user-facing text strings are stored here.
+class script(object):
+    START_TXT = "👋 Hello {name}, I am **FLIXORA AI** 🤖\n\nAn advanced JARVIS-style assistant. How can I help you today?"
+    HELP_TXT = "**Help Menu**\n- Send me any message to chat.\n- Use /register to sign up.\n- Use /upgrade for Premium."
+    ABOUT_TXT = "**About FLIXORA AI**\nPowered by OpenRouter. Built for high performance and stability."
+    TOP_SEARCH_TXT = "⭐ **Top Searching**\nCurrently trending topics..."
+    VERIFY_TXT = "🔒 **Complete verification to continue.**\n\nYou need to verify your access every 24 hours.\n👉 [Click here to Verify]({short_url})"
+
+    # --- NEW DETAILED PREMIUM SECTION ---
+
+    PREMIUM_INFO_TXT = """
+🚀 **Unlock the Full Power of FLIXORA AI with Premium!**
+
+As a free user, you have access to our basic features. Upgrading to Premium removes all restrictions and gives you the ultimate AI experience.
+
+**Here's what you get:**
+
+✅ **Unlimited Access**
+Say goodbye to the 24-hour verification link. Chat anytime, without interruptions.
+
+🧠 **Exclusive AI Models**
+Access our most powerful and creative AI models, reserved only for premium members.
+
+⚡ **Priority Speed & Performance**
+Your requests are processed with high priority, ensuring faster responses even during peak hours.
+
+📝 **Extended Conversation Memory**
+The AI will remember the last 20 messages of your conversation, not just 10, for more context-aware and intelligent replies.
+
+🚫 **No Rate Limits**
+Chat freely without any message speed restrictions or "slow down" warnings.
+
+🌟 **Priority Support**
+Get faster assistance from our support team if you encounter any issues.
+
+Ready to supercharge your AI assistant?
+"""
+
+    UPGRADE_TXT = """
+💎 **Final Step: Complete Your Payment**
+
+Please send the payment to the UPI ID or scan the QR code below.
+
+**UPI ID:** `{upi_id}`
+
+After a successful payment, you **must** submit the proof for verification.
+
+**How to Verify:**
+1. Take a screenshot of the successful payment.
+2. Get the 12-digit **UTR / Transaction ID**.
+3. Use the command `/submit_payment` to send us the details.
+
+Your premium status will be activated once an admin approves your submission (usually within a few hours).
+"""

@@ -1,0 +1,142 @@
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters, ContextTypes
+
+# Local imports
+import info
+from database import db_client
+from utils.logger import send_log
+from Script import script
+from plugins.start import start  # Import start to handle the 'back' button
+
+# Conversation states for payment submission
+UTR, SCREENSHOT = range(2)
+
+async def show_premium_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows the detailed premium benefits menu.
+    This is the first step when a user clicks 'Upgrade'.
+    """
+    query = update.callback_query
+    
+    keyboard = [
+        [InlineKeyboardButton("💳 Proceed to Payment", callback_data="proceed_to_payment")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Edit the existing message (which is the start menu) to show the premium info
+    await query.edit_message_caption(
+        caption=script.PREMIUM_INFO_TXT,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    await query.answer()
+
+async def show_payment_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows the QR code and UPI ID for payment.
+    This is the second step, after the user decides to proceed.
+    """
+    query = update.callback_query
+    
+    # Delete the premium info menu to keep the chat clean
+    await query.message.delete()
+    
+    text = script.UPGRADE_TXT.format(upi_id=info.UPI_ID)
+            
+    if info.QR_IMAGE_URL:
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=info.QR_IMAGE_URL,
+            caption=text,
+            parse_mode="Markdown"
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=text,
+            parse_mode="Markdown"
+        )
+    await query.answer()
+
+async def back_to_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles the 'Back' button by recreating the start menu.
+    This is essential for a smooth user flow.
+    """
+    query = update.callback_query
+    await query.message.delete() # Delete the premium menu
+    # We call the original start function to regenerate the start menu
+    await start(update, context)
+    await query.answer()
+
+
+# --- Payment Submission Logic (remains the same) ---
+
+async def start_payment_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts the process to submit payment proof via /submit_payment."""
+    await update.message.reply_text("🧾 Please enter the 12-digit **UTR / Transaction ID** from your payment:", parse_mode="Markdown")
+    return UTR
+
+async def get_utr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves UTR and asks for screenshot."""
+    context.user_data['utr'] = update.message.text
+    await update.message.reply_text("📸 Great! Now, please upload the **Payment Screenshot**:", parse_mode="Markdown")
+    return SCREENSHOT
+
+async def get_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves screenshot, logs payment, and notifies admins."""
+    user = update.effective_user
+    photo_file_id = update.message.photo[-1].file_id
+    
+    payment_data = {
+        "user_id": user.id,
+        "name": user.full_name,
+        "utr": context.user_data.get('utr', 'N/A'),
+        "screenshot": photo_file_id,
+        "status": "pending"
+    }
+    db_client.insert_payment(payment_data)
+    
+    await update.message.reply_text("✅ Payment submitted successfully! An admin will review it shortly. This can take up to 24 hours.")
+    
+    log_text = f"💰 **Payment Submitted**\nUser: {user.full_name} (`{user.id}`)\nUTR: `{context.user_data.get('utr', 'N/A')}`"
+    await send_log(context, log_text)
+    
+    admin_caption = f"{log_text}\n\nUse `/approve {user.id}` or `/reject {user.id}`"
+    for admin_id in info.ADMIN_IDS:
+        try:
+            await context.bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=admin_caption, parse_mode="Markdown")
+        except Exception:
+            await context.bot.send_message(admin_id, admin_caption, parse_mode="Markdown")
+            
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancels the payment submission process."""
+    await update.message.reply_text("Payment submission cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# --- HANDLERS ---
+
+# Handles the multi-step menu: Upgrade -> Proceed -> Back
+premium_cb_handler = CallbackQueryHandler(show_premium_menu, pattern="^upgrade$")
+proceed_payment_cb_handler = CallbackQueryHandler(show_payment_details, pattern="^proceed_to_payment$")
+back_to_start_cb_handler = CallbackQueryHandler(back_to_start_menu, pattern="^back_to_start$")
+
+# Handles the /upgrade command directly
+premium_cmd_handler = CommandHandler("upgrade", show_payment_details) # Command directly shows payment info
+
+# Handles the /submit_payment conversation
+payment_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("submit_payment", start_payment_submission)],
+    states={
+        UTR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_utr)],
+        SCREENSHOT: [MessageHandler(filters.PHOTO, get_screenshot)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_payment)],
+    conversation_timeout=300
+)
